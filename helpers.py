@@ -167,7 +167,7 @@ def i_corr(flamp,f,i):
     head_i, tail_i = os.path.split(f[i])
     
     ## Important note to change the location of this .txt file below to where it is in your computer.
-    calibstd = np.loadtxt(r"G:\Shared drives\Pauzauskie Team Drive\CG\Scripts\030410638_HL-2000-CAL_2014-01-15-14-09_VISEXT1EXT2_FIB.txt")
+    calibstd = np.loadtxt(r"G:\Shared drives\Pauzauskie Team Drive\Users\CG\Scripts\030410638_HL-2000-CAL_2014-01-15-14-09_VISEXT1EXT2_FIB.txt")
     xcalib = calibstd[:,0]
     ycalib = calibstd[:,1]
 
