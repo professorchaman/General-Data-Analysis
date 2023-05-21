@@ -26,6 +26,8 @@ from peakutils.plot import plot as pplot
 
 from tqdm import tqdm
 
+import spe_read as spe  
+
 ## Defining all functions
 
 # DO NOT CHANGE anything - except the locaiton of your lamp data file ( it is in the i_corr function)
@@ -80,8 +82,14 @@ class DataReader():
         fname = os.path.splitext(self.file_name)[0]
         ext = os.path.splitext(self.file_name)[1]
         
-        ext_dict = {".csv" : (",",0), ".txt" : ("\t",1), ".dat" : (None,0)}
- 
+        metadata = None
+        
+        ext_dict = {".csv" : (",",0), ".txt" : ("\t",1), ".dat" : (None,0), ".spe" : ()}
+        
+        if ext == ".spe":
+            x, y, metadata = self.read_spe()
+            return x, y, metadata
+
         data = pd.read_csv(self.file_name, skiprows=ext_dict[ext][1], sep=ext_dict[ext][0],engine='python',header=None)
         x = data[0].to_numpy()
         y = data[1].to_numpy()
@@ -94,13 +102,40 @@ class DataReader():
             for k in range(0,col_len-1):
                 y[:,k] = data.iloc[:,k+1].values
         
-        return x, y
+        return x, y, metadata
 
     def read_xlsx(self):
         return pd.read_excel(self.file_name)
 
     def read_json(self):
         return pd.read_json(self.file_name)
+    
+    def read_spe(self):
+        spe_obj = spe.spe_reader(file_name=self.file_name)
+        
+        file_data = []
+        metadata_dict = dict()
+        
+        metadata_footer = spe_obj.spe_files.footer
+
+        grove, cw = spe_obj.get_grating_info(metadata_footer)
+        et = spe_obj.get_exposure_time(metadata_footer)
+        acc_val, acc_method = spe_obj.get_accumulation_info(metadata_footer)
+        
+        x = spe_obj.spe_files._get_wavelength()
+        
+        file_data[:] = spe_obj.spe_files.data[:][0][0]
+        
+        metadata_dict = {
+            "grating" : str(grove) + " g/mm",
+            "center_wavelength" : str(cw) + " nm",
+            "exposure_time" : et + " msec",
+            "accumulation_value" : acc_val,
+            "accumulation_method" : acc_method
+        }
+        
+        return x, file_data, metadata_dict
+        # return NotImplementedError 
 
 def data_cleaning(data,erp):
     
@@ -220,6 +255,100 @@ def norm_func(x, y, do_normalize):
     
     return norm_intens_data
 
+def remove_cosmic_rays(selectFiles,batching,batch_size,average,final_file_name='-cosmic_ray-rmvd.csv'):
+    """Remove cosmic rays from y_all by taking median within each batch.
+
+    Args:
+        y_all (list): List of numpy arrays to process.
+        batch_size (int): Size of each batch.
+
+    Returns:
+        numpy.ndarray: Median array after processing each batch.
+    """
+    y_all = []
+
+    fdata = selectFiles.files
+    
+    if len(fdata) < 3:
+        print("Please select at least 3 files to remove cosmic rays")
+        
+    head_i, tail_i = os.path.split(fdata[0])
+    for idx, file in enumerate(fdata):
+    
+        x_data, y_data, metadata = DataReader(file_name=file).read_file()
+        y_all.append(y_data)
+    # Convert the numpy arrays to column vectors
+    column_vectors = [np.expand_dims(arr, axis=1) for arr in y_all]
+
+    # Concatenate the column vectors along the axis=1
+    concatenated_array = np.concatenate(column_vectors, axis=1)
+    median_array = concatenated_array
+    
+    median_batches = []
+    
+    if batching==True:
+        # Get the total number of elements and batches
+        # print(concatenated_array.shape)
+        total_elements = concatenated_array.shape[1]
+        total_batches = total_elements // batch_size
+
+        # Calculate the median within each batch
+        for i in range(total_batches):
+            start_idx = i * batch_size
+            end_idx = (i + 1) * batch_size
+            batch_concat = np.concatenate(column_vectors[:][start_idx:end_idx], axis=1)
+            batch_median = np.median(batch_concat, axis=1)
+            median_batches.append(batch_median)
+
+            # Save each batch_median to a CSV file
+            batch_filename = f'-batch_median_{i+1}.csv'
+            total_median_data = np.column_stack((x_data, batch_median))
+            np.savetxt(os.path.join(head_i,tail_i[:-13]+batch_filename), total_median_data, delimiter=',')
+    
+        if total_batches == 1: average = False
+        
+    # Concatenate the median batches into a single array
+    median_array = np.median(concatenated_array, axis=1)
+    total_median_data = np.column_stack((x_data, median_array))
+    
+    # Save the final median_array to a CSV file
+    np.savetxt(os.path.join(head_i,tail_i[:-13]+final_file_name), total_median_data, delimiter=',')
+    
+    if batching == True & average==True:
+        averaged_data = np.average(median_batches, axis=0)
+        total_average_data = np.column_stack((x_data, averaged_data))
+        np.savetxt(os.path.join(head_i,tail_i[:-13]+"-averaged_data.csv"), total_average_data, delimiter=',')
+        
+    elif batching == False & average==True:
+        averaged_data = np.average(median_batches, axis=0)
+        total_average_data = np.column_stack((x_data, averaged_data))
+        np.savetxt(os.path.join(head_i,tail_i[:-13]+"-averaged_data.csv"), total_average_data, delimiter=',')
+
+    # Return the final median array
+    return x_data, median_array
+
+def data_averaging(selectFiles,average,final_file_name='-averaged_data.csv'):
+    
+    fdata = selectFiles.files
+    
+    if len(fdata) < 2:
+        print("Please select at least 2 files to average")
+        
+    head_i, tail_i = os.path.split(fdata[0])
+    for idx, file in enumerate(fdata):
+    
+        x_data, y_data, metadata = DataReader(file_name=file).read_file()
+        if idx == 0:
+            y_all = y_data
+        else:
+            y_all = np.column_stack((y_all,y_data))
+    
+    averaged_data = np.average(y_all, axis=1)
+    total_average_data = np.column_stack((x_data, averaged_data))
+    np.savetxt(os.path.join(head_i,tail_i[:-13]+final_file_name), total_average_data, delimiter=',')
+    
+    return x_data, averaged_data
+
 def mean_f_wvl(x,y,meanf_method):
     
     lambda_f = None
@@ -246,6 +375,12 @@ def ram2nm(x,laser_source):
 
 def nm2ram(x,laser_source):
     return 10**7*(1/laser_source - 1/x)
+
+def nm2eV(x):
+    return 1232/x
+
+def eV2nm(x):
+    return x/1232
 
 def plot_meanf_data(laser_Pow, meanf_df, ax2, plot_title):
     for laser_power in laser_Pow:
@@ -326,6 +461,7 @@ def i_corr_cleaning(iFiles,do_baseline_subtraction,do_median_filtering,do_data_c
         
     # plt.show()
     # plt.savefig()
+
 
 
 if __name__ == "__main__":
